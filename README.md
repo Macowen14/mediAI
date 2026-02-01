@@ -110,6 +110,18 @@ ollama pull nomic-embed-text:latest  # Embeddings
 
 ## 🚀 Quick Start
 
+### Streamlit App (Interactive UI)
+
+The easiest way to use the assistant:
+
+```bash
+streamlit run app.py
+```
+
+- **Real-time Streaming**: Watch the AI "think" and generate answers.
+- **Model Selection**: Switch between available Ollama models.
+- **Reference Sources**: View citations.
+
 ### Python API
 
 ```python

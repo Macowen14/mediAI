@@ -38,8 +38,8 @@ class ModelType(str, Enum):
     - Embedding (specialized for text encoding)
     """
     
-    THEME_DETECTOR = "ministral-3:8b"  # Small, fast model for theme detection
-    MAIN_GENERATOR = "deepseek-v3.1:671b-cloud"  # Large model for main responses
+    THEME_DETECTOR = "ministral-3:8"  # Small, fast model for theme detection
+    MAIN_GENERATOR = "mistral-large-3:675b-cloud"  # Large model for main responses
     EMBEDDING = "nomic-embed-text:latest"  # Specialized embedding model
     # TODO: Add support for gemma3:27b-cloud for faster general queries
     # TODO: Add support for mistral-large-3:675b-cloud for high-quality responses

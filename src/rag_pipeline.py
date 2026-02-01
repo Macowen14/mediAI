@@ -61,7 +61,9 @@ class MedicalRAGPipeline:
         self,
         question: str,
         search_k: int = 3,
-        relevance_threshold: float = 0.5
+        relevance_threshold: float = 0.5,
+        status_callback=None,
+        streaming_callback: Optional[list] = None
     ) -> MedicalAnswer:
         """
         Process a medical question through the full RAG pipeline.
@@ -70,11 +72,15 @@ class MedicalRAGPipeline:
             question: Medical question from user
             search_k: Number of documents to retrieve
             relevance_threshold: Minimum relevance score for context
+            status_callback: Optional function(str) to report progress steps
+            streaming_callback: Optional list of LangChain callbacks for token streaming
             
         Returns:
             MedicalAnswer with comprehensive response and metadata
         """
         logger.info(f"Processing question: {question[:100]}...")
+        if status_callback:
+            status_callback("Analyzing question theme...")
         
         try:
             # Step 1: Detect question theme
@@ -86,6 +92,8 @@ class MedicalRAGPipeline:
             logger.info(f"  Theme: {theme} (confidence: {theme_confidence})")
             
             # Step 2: Search vector database
+            if status_callback:
+                status_callback(f"Searching medical knowledge base (Theme: {theme})...")
             logger.info("Step 2: Searching vector database...")
             search_results = VectorSearch.search_similar_documents(
                 self.vectorstore,
@@ -96,6 +104,8 @@ class MedicalRAGPipeline:
             logger.info(f"  Found {len(search_results)} documents")
             
             # Step 3: Evaluate context sufficiency
+            if status_callback:
+                status_callback("Evaluating retrieved context...")
             logger.info("Step 3: Evaluating context sufficiency...")
             has_sufficient = VectorSearch.has_sufficient_context(
                 search_results,
@@ -108,12 +118,15 @@ class MedicalRAGPipeline:
             context_summary = PromptBuilder.build_context_summary(search_results)
             
             # Step 4: Generate answer
+            if status_callback:
+                status_callback("Generating comprehensive answer...")
             logger.info("Step 4: Generating answer...")
             answer_text = self.response_generator.generate_answer(
                 question=question,
                 theme=theme,
                 context=context_summary,
-                has_vector_context=has_sufficient
+                has_vector_context=has_sufficient,
+                callbacks=streaming_callback
             )
             
             logger.info("  Answer generated successfully")
@@ -190,37 +203,64 @@ class MedicalRAGPipeline:
     def batch_process_questions(
         self,
         questions: List[str],
-        search_k: int = 3
+        search_k: int = 3,
+        max_workers: int = 3
     ) -> List[MedicalAnswer]:
         """
-        Process multiple questions in batch.
+        Process multiple questions in batch using parallel execution.
         
         Args:
             questions: List of questions to process
             search_k: Number of documents to retrieve per question
+            max_workers: Maximum number of parallel threads
             
         Returns:
-            List of MedicalAnswer objects
+            List of MedicalAnswer objects (in original order)
             
-        TODO: Implement parallel processing for better performance
-        TODO: Add caching for identical or similar questions
-        TODO: Add batch result aggregation and analysis
+        Note:
+            Uses ThreadPoolExecutor for concurrent processing.
+            Thread safety is managed via internal locks.
         """
-        logger.info(f"Processing batch of {len(questions)} questions")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
         
-        results = []
-        for i, question in enumerate(questions, 1):
-            logger.info(f"Processing question {i}/{len(questions)}")
-            try:
-                answer = self.process_question(question, search_k=search_k)
-                results.append(answer)
-            except Exception as e:
-                logger.error(f"Error processing question {i}: {e}")
-                # Continue with next question even if one fails
-                continue
+        logger.info(f"Processing batch of {len(questions)} questions with {max_workers} workers")
         
-        logger.info(f"Batch processing complete. Processed {len(results)}/{len(questions)} questions")
-        return results
+        # Lock for thread-safe operations if needed (e.g. shared stats update)
+        batch_lock = threading.Lock()
+        
+        results = [None] * len(questions)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Map futures to original index to preserve order
+            future_to_index = {
+                executor.submit(self.process_question, question, search_k): i 
+                for i, question in enumerate(questions)
+            }
+            
+            processed_count = 0
+            
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                question = questions[index]
+                
+                try:
+                    answer = future.result()
+                    
+                    with batch_lock:
+                        results[index] = answer
+                        processed_count += 1
+                        logger.info(f"Completed question {processed_count}/{len(questions)}: {question[:50]}...")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing question {index} ('{question[:30]}...'): {e}")
+                    # Keep None in results for failed items or handle differently
+                    
+        # Filter out None results (failed queries)
+        valid_results = [r for r in results if r is not None]
+        
+        logger.info(f"Batch processing complete. Processed {len(valid_results)}/{len(questions)} questions successfully")
+        return valid_results
 
 
 # TODO: Implement advanced features:

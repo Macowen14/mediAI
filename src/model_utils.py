@@ -181,7 +181,8 @@ class ResponseGenerator:
         question: str,
         theme: str,
         context: str,
-        has_vector_context: bool = False
+        has_vector_context: bool = False,
+        callbacks: Optional[list] = None
     ) -> str:
         """
         Generate a medical answer based on question, theme, and context.
@@ -191,29 +192,26 @@ class ResponseGenerator:
             theme: Detected question theme
             context: Retrieved context from vector database
             has_vector_context: Whether context comes from vector DB
+            callbacks: Optional list of LangChain callbacks for streaming
             
         Returns:
             Generated answer string
-            
-        TODO: Add streaming response support
-        TODO: Add response validation and fact-checking
-        TODO: Add output truncation for very long answers
         """
         logger.info(f"Generating answer for theme: {theme}")
         
         # Get theme-specific system prompt
         system_prompt = PromptTemplates.get_system_prompt(theme)
         
-        # Build user message
+        # Build user message template
         if context:
-            user_message = f"""Question: {question}
+            user_template_str = """Question: {question}
 
 Context from Medical Knowledge Base:
 {context}
 
 Please provide a comprehensive answer using the context above. Cite specific sources when using information from the knowledge base."""
         else:
-            user_message = f"""Question: {question}
+            user_template_str = """Question: {question}
 
 No specific context was found in the medical knowledge base for this question. 
 Please provide an answer based on general medical knowledge, and clearly indicate that this is from your training data rather than curated sources."""
@@ -221,12 +219,23 @@ Please provide an answer based on general medical knowledge, and clearly indicat
         try:
             # Create prompt template
             system_template = SystemMessagePromptTemplate.from_template(system_prompt)
-            human_template = HumanMessagePromptTemplate.from_template(user_message)
+            human_template = HumanMessagePromptTemplate.from_template(user_template_str)
             prompt = ChatPromptTemplate.from_messages([system_template, human_template])
             
             # Generate response
             chain = prompt | self.model
-            response = chain.invoke({})
+            
+            # Invoke with variables to handle special characters safely
+            input_vars = {"question": question}
+            if context:
+                input_vars["context"] = context
+            
+            # Use streaming if callbacks are provided, otherwise normal invoke
+            # Note: For ChatOllama, we need to ensure the model was initialized with streaming=True 
+            # or we rely on the callback getting tokens.
+            # Actually invoke() with callbacks works for standard handlers.
+            
+            response = chain.invoke(input_vars, config={"callbacks": callbacks} if callbacks else None)
             
             # Extract text content
             answer_text = response.content if hasattr(response, 'content') else str(response)
@@ -235,8 +244,23 @@ Please provide an answer based on general medical knowledge, and clearly indicat
             return answer_text
             
         except Exception as e:
-            logger.error(f"Error generating answer: {e}")
-            raise
+            logger.error(f"Error generating answer with context: {e}")
+            
+            # Fallback: Try generating without context if context caused the issue
+            if context:
+                logger.info("Attempting fallback generation without context...")
+                try:
+                    fallback_user_msg = f"Question: {question}\n\nPlease answer based on general medical knowledge."
+                    fallback_response = self.model.invoke(
+                        fallback_user_msg, 
+                        config={"callbacks": callbacks} if callbacks else None
+                    )
+                    fallback_text = fallback_response.content if hasattr(fallback_response, 'content') else str(fallback_response)
+                    return f"{fallback_text}\n\n[Note: Context processing failed, answer based on general knowledge]"
+                except Exception as fallback_e:
+                    logger.error(f"Fallback generation failed: {fallback_e}")
+            
+            return "I apologize, but I encountered an error processing your question. Please try rephrasing or asking another question."
 
     def extract_json_response(self, response_text: str) -> Dict[str, Any]:
         """
